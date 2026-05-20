@@ -63,18 +63,57 @@ export async function fetchGitHubCommitsByDay(
   username: string,
   token: string,
 ): Promise<GitHubCommitsByDay> {
+  await assertGitHubCredentials(username, token)
+
   const yesterdayStart = startOfLocalDay(-1)
   const since = yesterdayStart.toISOString()
 
   const pulls = await fetchRecentPullRequests(username, token, since)
 
   const fromSearch = await fetchCommitsViaSearch(username, token, since)
-  if (fromSearch.length > 0) {
-    return { ...bucketCommits(fromSearch), pulls }
-  }
-
   const fromEvents = await fetchCommitsViaEvents(username, token, since)
-  return { ...bucketCommits(fromEvents), pulls }
+
+  const merged = mergeActivityLists(fromSearch, fromEvents)
+  return { ...bucketCommits(merged), pulls }
+}
+
+function mergeActivityLists(
+  a: GitHubCommitSummary[],
+  b: GitHubCommitSummary[],
+): GitHubCommitSummary[] {
+  const seen = new Set<string>()
+  const out: GitHubCommitSummary[] = []
+  for (const item of [...a, ...b]) {
+    const key = `${item.repo}|${item.sha}|${item.message}|${item.committedAt}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(item)
+  }
+  return out
+}
+
+async function assertGitHubCredentials(
+  username: string,
+  token: string,
+): Promise<void> {
+  const response = await fetch('https://api.github.com/user', {
+    headers: githubHeaders(token),
+  })
+  if (!response.ok) {
+    const hint = await response.text()
+    throw new Error(
+      `GitHub token rejected (${response.status}). On Vercel, set GITHUB_TOKEN with a classic token (scopes: repo, read:user). ${hint.slice(0, 120)}`,
+    )
+  }
+  const user = (await response.json()) as { login?: string }
+  if (
+    user.login &&
+    user.login.toLowerCase() !== username.trim().toLowerCase()
+  ) {
+    throw new Error(
+      `GITHUB_USERNAME is "${username}" but this token belongs to "${user.login}". Use your exact GitHub login in GITHUB_USERNAME.`,
+    )
+  }
 }
 
 async function fetchRecentPullRequests(
@@ -91,6 +130,11 @@ async function fetchRecentPullRequests(
   url.searchParams.set('per_page', '20')
 
   const response = await fetch(url, { headers: githubHeaders(token) })
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      `GitHub PR search failed (${response.status}). Token may lack repo scope.`,
+    )
+  }
   if (!response.ok) return []
 
   const data = (await response.json()) as {
@@ -143,6 +187,11 @@ async function fetchCommitsViaSearch(
     },
   })
 
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      `GitHub commit search failed (${response.status}). Check GITHUB_TOKEN on Vercel.`,
+    )
+  }
   if (!response.ok) {
     return []
   }
@@ -188,6 +237,14 @@ async function fetchCommitsViaEvents(
     created_at: string
     repo?: { name?: string }
     payload?: {
+      ref_type?: string
+      action?: string
+      ref?: string
+      pull_request?: {
+        number?: number
+        title?: string
+        html_url?: string
+      }
       commits?: Array<{
         sha: string
         message: string
@@ -199,17 +256,61 @@ async function fetchCommitsViaEvents(
   const results: GitHubCommitSummary[] = []
 
   for (const event of events) {
-    if (event.type !== 'PushEvent') continue
     if (new Date(event.created_at).getTime() < sinceMs) continue
 
     const repo = event.repo?.name ?? 'unknown'
-    for (const commit of event.payload?.commits ?? []) {
+    const at = event.created_at
+
+    if (event.type === 'CreateEvent' && event.payload?.ref_type === 'repository') {
+      results.push({
+        repo,
+        message: 'Created repository',
+        sha: 'repo-new',
+        url: `https://github.com/${repo}`,
+        committedAt: at,
+      })
+      continue
+    }
+
+    if (event.type === 'PullRequestEvent') {
+      const pr = event.payload?.pull_request as
+        | { number?: number; title?: string; html_url?: string }
+        | undefined
+      if (pr?.number && pr.title) {
+        const action = event.payload?.action ?? 'updated'
+        results.push({
+          repo,
+          message: `${action} pull request #${pr.number}: ${pr.title}`,
+          sha: `pr-${pr.number}`,
+          url: pr.html_url ?? `https://github.com/${repo}/pull/${pr.number}`,
+          committedAt: at,
+        })
+      }
+      continue
+    }
+
+    if (event.type !== 'PushEvent') continue
+
+    const commits = event.payload?.commits ?? []
+    if (commits.length === 0) {
+      const ref = event.payload?.ref?.replace(/^refs\/heads\//, '') ?? 'branch'
+      results.push({
+        repo,
+        message: `Pushed to ${ref} (no commit messages in event)`,
+        sha: 'push',
+        url: `https://github.com/${repo}`,
+        committedAt: at,
+      })
+      continue
+    }
+
+    for (const commit of commits) {
       results.push({
         repo,
         message: commit.message.split('\n')[0] ?? commit.message,
         sha: commit.sha.slice(0, 7),
         url: commit.url ?? `https://github.com/${repo}/commit/${commit.sha}`,
-        committedAt: event.created_at,
+        committedAt: at,
       })
     }
   }

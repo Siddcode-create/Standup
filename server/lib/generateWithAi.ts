@@ -374,7 +374,7 @@ function standupFromGitHubPromptText(
 
 function noGitHubActivityMessage(day: 'yesterday' | 'today'): string {
   const label = day === 'yesterday' ? 'Yesterday' : 'Today'
-  return `${label}: No GitHub commits or pull requests were found for this day (last 2 days checked).`
+  return `${label}: No GitHub activity (commits, PRs, or repo changes) was found for this calendar day (last ~2 days checked).`
 }
 
 function summarizeGitHubDay(lines: string[], day: 'yesterday' | 'today'): string {

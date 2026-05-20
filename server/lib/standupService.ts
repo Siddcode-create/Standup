@@ -110,7 +110,7 @@ export async function runStandupGeneration(
         githubFetchReason,
         aiProvider: 'local',
         aiWarning:
-          'No GitHub commits or pull requests found in the last 2 days. Add daily notes to include work outside GitHub.',
+          'No GitHub activity in the last ~2 days. Check GITHUB_USERNAME matches your login, token has repo scope, and activity was today/yesterday. Add daily notes for non-GitHub work.',
       },
     }
   }
