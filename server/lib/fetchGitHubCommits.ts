@@ -41,7 +41,7 @@ function isInLocalDay(isoDate: string, dayStart: Date): boolean {
 
 function bucketCommits(
   commits: GitHubCommitSummary[],
-): GitHubCommitsByDay {
+): Pick<GitHubCommitsByDay, 'today' | 'yesterday'> {
   const todayStart = startOfLocalDay(0)
   const yesterdayStart = startOfLocalDay(-1)
 
